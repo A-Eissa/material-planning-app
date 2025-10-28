@@ -63,10 +63,17 @@ def load_data(file_path):
 
 def get_latest_study_file():
     """Find the most recent Material Study file"""
-    files = glob.glob("MV_Material_Study-*.xlsx")
-    if not files:
+    try:
+        files = glob.glob("MV_Material_Study-*.xlsx")
+        if not files:
+            # Also try without the pattern in case the file is named differently
+            files = glob.glob("*.xlsx")
+            files = [f for f in files if 'Material' in f or 'material' in f or 'Study' in f or 'study' in f]
+        if not files:
+            return None
+        return max(files, key=os.path.getctime)
+    except Exception as e:
         return None
-    return max(files, key=os.path.getctime)
 
 def calculate_project_status(df, project):
     """Calculate comprehensive status for a project"""
@@ -226,17 +233,22 @@ def main():
     latest_file = get_latest_study_file()
     
     if latest_file:
-        st.sidebar.success(f"📄 Found: {latest_file}")
-        use_latest = st.sidebar.checkbox("Use this file", value=True)
+        st.sidebar.success(f"📄 Auto-detected: {os.path.basename(latest_file)}")
+        use_latest = st.sidebar.checkbox("Use this file", value=True, key="use_auto_file")
         if use_latest:
             uploaded_file = latest_file
         else:
-            uploaded_file = st.sidebar.file_uploader("Upload Material Study", type=['xlsx'])
+            uploaded_file = st.sidebar.file_uploader("Upload a different file", type=['xlsx'], key="manual_upload")
     else:
-        uploaded_file = st.sidebar.file_uploader("Upload Material Study", type=['xlsx'])
+        st.sidebar.warning("⚠️ No Material Study file found in directory")
+        # Show available files for debugging
+        all_xlsx = glob.glob("*.xlsx")
+        if all_xlsx:
+            st.sidebar.info(f"Available Excel files: {', '.join([os.path.basename(f) for f in all_xlsx])}")
+        uploaded_file = st.sidebar.file_uploader("Upload Material Study", type=['xlsx'], key="file_upload")
     
     if uploaded_file is None:
-        st.info("👈 Please upload a Material Study file or ensure one exists in the directory")
+        st.info("👈 Please upload a Material Study file from the sidebar")
         st.markdown("""
         ### Welcome to Material Planning Assistant! 
         
@@ -248,7 +260,12 @@ def main():
         - ⚠️ What are my critical projects?
         - 🏭 Which projects can I push to production now?
         
-        **Get started by uploading your Material Study file!**
+        **Get started by uploading your Material Study Excel file using the sidebar!**
+        
+        ### 📋 Expected File Format:
+        - Excel file (.xlsx)
+        - Should contain a sheet named "Study"
+        - Recommended filename: `MV_Material_Study-*.xlsx`
         """)
         return
     
