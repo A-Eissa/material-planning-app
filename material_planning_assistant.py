@@ -61,6 +61,34 @@ def load_data(file_path):
         st.error(f"Error loading file: {e}")
         return None
 
+def calculate_actual_requirement(df, group_by_cols=['SEC order', 'item']):
+    """
+    Calculate actual requirement correctly handling split allocation rows.
+    
+    Each row in the Material Study represents an allocation attempt, not a demand line.
+    When a demand is allocated from multiple sources, it creates multiple rows.
+    
+    For each unique demand (grouped by SEC order + item), the actual requirement is:
+    allocated_qty.sum() + balance.max()
+    
+    This works because:
+    - allocated_qty.sum() = total allocated across all sources for this demand
+    - balance.max() = remaining unfulfilled amount (last allocation row's balance)
+    - Together they equal the original demand quantity
+    
+    Args:
+        df: DataFrame with allocation data
+        group_by_cols: Columns to group by to identify unique demands
+    
+    Returns:
+        Total actual requirement (sum across all unique demands)
+    """
+    if df.empty:
+        return 0
+    return df.groupby(group_by_cols).apply(
+        lambda x: x['allocated_qty'].sum() + x['balance'].max()
+    ).sum()
+
 def get_latest_study_file():
     """Find the most recent Material Study file"""
     try:
@@ -83,7 +111,8 @@ def calculate_project_status(df, project):
         return None
     
     total_items = len(proj_data)
-    total_req = proj_data['req_qty'].sum()
+    # Calculate actual requirement correctly - each unique (SEC order, item) is one demand
+    total_req = calculate_actual_requirement(proj_data, group_by_cols=['SEC order', 'item'])
     total_allocated = proj_data['allocated_qty'].sum()
     total_balance = proj_data['balance'].sum()
     
@@ -134,16 +163,22 @@ def material_inquiry(df, item_code):
     if item_data.empty:
         return None
     
-    total_req = item_data['req_qty'].sum()
+    # Calculate actual requirement correctly
+    total_req = calculate_actual_requirement(item_data, group_by_cols=['SEC order', 'item'])
     total_allocated = item_data['allocated_qty'].sum()
     total_balance = item_data['balance'].sum()
     
-    # Where is it allocated?
+    # Where is it allocated? - Calculate correctly per project
     allocation_by_project = item_data.groupby('SEC order').agg({
-        'req_qty': 'sum',
         'allocated_qty': 'sum',
-        'balance': 'sum'
+        'balance': 'max'  # Max balance gives the final remaining amount
     }).reset_index()
+    # Calculate actual req_qty for each project
+    allocation_by_project['req_qty'] = (
+        allocation_by_project['allocated_qty'] + allocation_by_project['balance']
+    )
+    # Reorder columns
+    allocation_by_project = allocation_by_project[['SEC order', 'req_qty', 'allocated_qty', 'balance']]
     
     # Supply sources
     supply_sources = item_data.groupby(['supply_type', 'source']).agg({
@@ -308,7 +343,8 @@ def show_dashboard_overview(df):
     
     total_projects = df['SEC order'].nunique()
     total_items = len(df)
-    total_req = df['req_qty'].sum()
+    # Calculate actual requirement correctly
+    total_req = calculate_actual_requirement(df, group_by_cols=['SEC order', 'item'])
     total_allocated = df['allocated_qty'].sum()
     overall_fulfillment = (total_allocated / total_req * 100) if total_req > 0 else 0
     
@@ -653,9 +689,13 @@ def show_push_to_production(df):
     
     with col3:
         st.metric("Total Items", len(filtered_df) if not filtered_df.empty else 0)
-        if not filtered_df.empty and filtered_df['req_qty'].sum() > 0:
-            fulfillment = (filtered_df['allocated_qty'].sum() / filtered_df['req_qty'].sum() * 100)
-            st.metric("Fulfillment", f"{fulfillment:.1f}%")
+        if not filtered_df.empty:
+            total_req = calculate_actual_requirement(filtered_df, group_by_cols=['SEC order', 'item'])
+            if total_req > 0:
+                fulfillment = (filtered_df['allocated_qty'].sum() / total_req * 100)
+                st.metric("Fulfillment", f"{fulfillment:.1f}%")
+            else:
+                st.metric("Fulfillment", "N/A")
         else:
             st.metric("Fulfillment", "N/A")
     
