@@ -110,16 +110,22 @@ def calculate_project_status(df, project):
     if proj_data.empty:
         return None
     
-    total_items = len(proj_data)
+    # Count distinct items, not allocation rows
+    total_items = proj_data['item'].nunique()
     # Calculate actual requirement correctly - each unique (SEC order, item) is one demand
     total_req = calculate_actual_requirement(proj_data, group_by_cols=['SEC order', 'item'])
     total_allocated = proj_data['allocated_qty'].sum()
     total_balance = proj_data['balance'].sum()
     
-    # Status categorization
-    ready = len(proj_data[proj_data['balance'] == 0])
-    partial = len(proj_data[(proj_data['balance'] > 0) & (proj_data['allocated_qty'] > 0)])
-    missing = len(proj_data[proj_data['allocated_qty'] == 0])
+    # Status categorization - per distinct item, not per row
+    item_status = proj_data.groupby('item').agg({
+        'balance': 'sum',  # Total remaining balance per item
+        'allocated_qty': 'sum'  # Total allocated per item
+    }).reset_index()
+    
+    ready = len(item_status[item_status['balance'] == 0])
+    partial = len(item_status[(item_status['balance'] > 0) & (item_status['allocated_qty'] > 0)])
+    missing = len(item_status[item_status['allocated_qty'] == 0])
     
     # Delay analysis
     delayed_items = proj_data[proj_data['delay'] != 0]
@@ -342,14 +348,15 @@ def show_dashboard_overview(df):
     col1, col2, col3, col4 = st.columns(4)
     
     total_projects = df['SEC order'].nunique()
-    total_items = len(df)
+    # Count distinct items (unique combinations of SEC order + item)
+    total_items = df.groupby(['SEC order', 'item']).ngroups
     # Calculate actual requirement correctly
     total_req = calculate_actual_requirement(df, group_by_cols=['SEC order', 'item'])
     total_allocated = df['allocated_qty'].sum()
     overall_fulfillment = (total_allocated / total_req * 100) if total_req > 0 else 0
     
     col1.metric("Total Projects", total_projects)
-    col2.metric("Total Line Items", total_items)
+    col2.metric("Total Distinct Items", total_items)
     col3.metric("Overall Fulfillment", f"{overall_fulfillment:.1f}%")
     col4.metric("Total Balance", f"{df['balance'].sum():.0f} units")
     
@@ -688,7 +695,9 @@ def show_push_to_production(df):
             filtered_df = df[df['product'].isin(selected)].copy() if selected else pd.DataFrame()
     
     with col3:
-        st.metric("Total Items", len(filtered_df) if not filtered_df.empty else 0)
+        # Count distinct items across selected projects
+        distinct_items = filtered_df['item'].nunique() if not filtered_df.empty else 0
+        st.metric("Distinct Items", distinct_items)
         if not filtered_df.empty:
             total_req = calculate_actual_requirement(filtered_df, group_by_cols=['SEC order', 'item'])
             if total_req > 0:
@@ -723,7 +732,8 @@ def show_push_to_production(df):
     qc_items = filtered_df[filtered_df['supply_type'] == 'QC'].copy()
     
     if not qc_items.empty:
-        st.error(f"🚫 **{len(qc_items)} items stuck in QC - Priority action required!**")
+        distinct_qc = qc_items['item'].nunique()
+        st.error(f"🚫 **{distinct_qc} distinct items stuck in QC - Priority action required!**")
         
         qc_display = qc_items[['item', 'description', 'allocated_qty', 'locater', 'supplier', 'availability_date']].copy()
         qc_display.columns = ['Item Code', 'Description', 'Qty in QC', 'PO-Line', 'Supplier', 'Received Date']
@@ -753,7 +763,8 @@ def show_push_to_production(df):
     gr_items = filtered_df[filtered_df['supply_type'] == 'GR_in_process'].copy()
     
     if not gr_items.empty:
-        st.warning(f"⏳ **{len(gr_items)} items pending GR processing**")
+        distinct_gr = gr_items['item'].nunique()
+        st.warning(f"⏳ **{distinct_gr} distinct items pending GR processing**")
         
         gr_display = gr_items[['item', 'description', 'allocated_qty', 'locater', 'supplier', 'availability_date']].copy()
         gr_display.columns = ['Item Code', 'Description', 'Qty Pending GR', 'PO-Line', 'Supplier', 'Receipt Date']
@@ -783,7 +794,8 @@ def show_push_to_production(df):
     wip_items = filtered_df[filtered_df['locater'] == '1-1-1-1'].copy()
     
     if not wip_items.empty:
-        st.info(f"🔧 **{len(wip_items)} items available in WIP - Please issue from production**")
+        distinct_wip = wip_items['item'].nunique()
+        st.info(f"🔧 **{distinct_wip} distinct items available in WIP - Please issue from production**")
         
         wip_display = wip_items[['item', 'description', 'allocated_qty', 'source', 'locater']].copy()
         wip_display.columns = ['Item Code', 'Description', 'Available Qty', 'Source Job', 'Locater']
@@ -822,7 +834,8 @@ def show_push_to_production(df):
     ].copy()
     
     if not allocate_items.empty:
-        st.warning(f"🔄 **{len(allocate_items)} items need reallocation from other jobs**")
+        distinct_reallocate = allocate_items['item'].nunique()
+        st.warning(f"🔄 **{distinct_reallocate} distinct items need reallocation from other jobs**")
         
         # Use only columns that exist in the dataframe
         base_cols = ['item', 'description', 'allocated_qty', 'SEC order', 'source', 'locater']
@@ -876,7 +889,8 @@ def show_push_to_production(df):
     ].copy()
     
     if not missing_items.empty:
-        st.error(f"🚨 **{len(missing_items)} items completely missing - Create PRs immediately!**")
+        distinct_missing = missing_items['item'].nunique()
+        st.error(f"🚨 **{distinct_missing} distinct items completely missing - Create PRs immediately!**")
         
         missing_display = missing_items[['item', 'description', 'req_qty', 'balance']].copy()
         missing_display.columns = ['Item Code', 'Description', 'Required Qty', 'Missing Qty']
@@ -904,14 +918,18 @@ def show_push_to_production(df):
     
     col1, col2, col3, col4, col5 = st.columns(5)
     
-    col1.metric("QC Items", len(qc_items) if not qc_items.empty else 0)
-    col2.metric("GR Pending", len(gr_items) if not gr_items.empty else 0)
-    col3.metric("WIP Items", len(wip_items) if not wip_items.empty else 0)
-    col4.metric("To Reallocate", len(allocate_items) if not allocate_items.empty else 0)
-    col5.metric("Missing", len(missing_items) if not missing_items.empty else 0)
+    col1.metric("QC Items", qc_items['item'].nunique() if not qc_items.empty else 0)
+    col2.metric("GR Pending", gr_items['item'].nunique() if not gr_items.empty else 0)
+    col3.metric("WIP Items", wip_items['item'].nunique() if not wip_items.empty else 0)
+    col4.metric("To Reallocate", allocate_items['item'].nunique() if not allocate_items.empty else 0)
+    col5.metric("Missing", missing_items['item'].nunique() if not missing_items.empty else 0)
     
     # Overall readiness assessment
-    total_blocking = len(qc_items) + len(gr_items) + len(missing_items)
+    total_blocking = (
+        (qc_items['item'].nunique() if not qc_items.empty else 0) +
+        (gr_items['item'].nunique() if not gr_items.empty else 0) +
+        (missing_items['item'].nunique() if not missing_items.empty else 0)
+    )
     
     st.markdown("---")
     
@@ -940,11 +958,11 @@ def show_push_to_production(df):
         summary_data = {
             'Category': ['QC Items', 'GR Pending', 'WIP Items', 'To Reallocate', 'Missing Materials'],
             'Count': [
-                len(qc_items) if not qc_items.empty else 0,
-                len(gr_items) if not gr_items.empty else 0,
-                len(wip_items) if not wip_items.empty else 0,
-                len(allocate_items) if not allocate_items.empty else 0,
-                len(missing_items) if not missing_items.empty else 0
+                qc_items['item'].nunique() if not qc_items.empty else 0,
+                gr_items['item'].nunique() if not gr_items.empty else 0,
+                wip_items['item'].nunique() if not wip_items.empty else 0,
+                allocate_items['item'].nunique() if not allocate_items.empty else 0,
+                missing_items['item'].nunique() if not missing_items.empty else 0
             ]
         }
         summary_df = pd.DataFrame(summary_data)
