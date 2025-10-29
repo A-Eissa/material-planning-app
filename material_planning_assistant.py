@@ -115,11 +115,12 @@ def calculate_project_status(df, project):
     # Calculate actual requirement correctly - each unique (SEC order, item) is one demand
     total_req = calculate_actual_requirement(proj_data, group_by_cols=['SEC order', 'item'])
     total_allocated = proj_data['allocated_qty'].sum()
-    total_balance = proj_data['balance'].sum()
+    # Calculate correct total balance - max balance per item (final unfulfilled amount)
+    total_balance = proj_data.groupby('item')['balance'].max().sum()
     
     # Status categorization - per distinct item, not per row
     item_status = proj_data.groupby('item').agg({
-        'balance': 'sum',  # Total remaining balance per item
+        'balance': 'max',  # Max balance gives the final unfulfilled amount
         'allocated_qty': 'sum'  # Total allocated per item
     }).reset_index()
     
@@ -172,7 +173,8 @@ def material_inquiry(df, item_code):
     # Calculate actual requirement correctly
     total_req = calculate_actual_requirement(item_data, group_by_cols=['SEC order', 'item'])
     total_allocated = item_data['allocated_qty'].sum()
-    total_balance = item_data['balance'].sum()
+    # Calculate correct total balance - max balance per (project, item) gives final unfulfilled
+    total_balance = item_data.groupby(['SEC order', 'item'])['balance'].max().sum()
     
     # Where is it allocated? - Calculate correctly per project
     allocation_by_project = item_data.groupby('SEC order').agg({
@@ -208,7 +210,9 @@ def material_inquiry(df, item_code):
     
     pr_items = item_data[item_data['supply_type'] == 'PR']
     if not pr_items.empty:
-        blocking_issues.append(f"📝 {pr_items['balance'].sum():.0f} units need PR creation")
+        # Get max balance per project to avoid double-counting within same project
+        pr_balance = pr_items.groupby('SEC order')['balance'].max().sum()
+        blocking_issues.append(f"📝 {pr_balance:.0f} units need PR creation")
     
     return {
         'description': item_data['description'].iloc[0],
@@ -358,7 +362,9 @@ def show_dashboard_overview(df):
     col1.metric("Total Projects", total_projects)
     col2.metric("Total Distinct Items", total_items)
     col3.metric("Overall Fulfillment", f"{overall_fulfillment:.1f}%")
-    col4.metric("Total Balance", f"{df['balance'].sum():.0f} units")
+    # Calculate correct total balance - max balance per item (final unfulfilled amount)
+    total_balance = df.groupby(['SEC order', 'item'])['balance'].max().sum()
+    col4.metric("Total Balance", f"{total_balance:.0f} units")
     
     st.markdown("---")
     
